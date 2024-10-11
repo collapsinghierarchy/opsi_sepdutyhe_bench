@@ -22,50 +22,38 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	//----------------- Params for Benchmarking -----------------//
-	// Number of Input Clients Loop (log2)
-	// Tested for X < 17
-	loop_num_input_clients := 15
-	// how often to repeat each data point and average over
-	const average_count int = 100
-	logN := 13
-	// stores the measured timings, first dimension j, second i, third the different timings: calculate, aggregate, decrypt, postprocess
-	output_timings := make([][]time.Duration, loop_num_input_clients-10)
-	defer store_Timing(output_timings, "numclients_"+strconv.Itoa(loop_num_input_clients)+"_inputsize_"+strconv.Itoa(2)+"_logN_"+strconv.Itoa(logN)+"_avg_"+strconv.Itoa(average_count), logger)
+	loop_num_input_clients := 17  // Number of Input Clients Loop (log2). Tested for X < 17
+	const average_count int = 100 // Number retries for averaging
+
+	output_timings := make([][]time.Duration, loop_num_input_clients-16) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
+	defer store_Timing(output_timings, "numclients_"+strconv.Itoa(loop_num_input_clients)+"_inputsize_"+strconv.Itoa(2)+"_logN_"+strconv.Itoa(13)+"_avg_"+strconv.Itoa(average_count), logger)
 	//Loop over different number of input clients
-	for i := 10; i < loop_num_input_clients; i++ {
+	for i := 16; i < loop_num_input_clients; i++ {
 		logger.Info("Starting loop "+strconv.FormatInt(int64(i+1), 10)+" / "+strconv.FormatInt(int64(loop_num_input_clients), 10), "Number of Clients", powInt(2, i))
-		// init timings array
-		output_timings[i-10] = make([]time.Duration, 4)
+		output_timings[i-16] = make([]time.Duration, 4) // init timings array
 		for avg_count := range average_count {
-			logger.Info("Start Initialization nr " + strconv.FormatInt(int64(avg_count), 10))
-			//	Configuration of the Application
+			logger.Info("Start Initialization nr " + strconv.Itoa(avg_count))
+			//-----------------Configuration of the Individual Run -----------------//
 			num_input_clients := powInt(2, i)                                // Default number of input clients
 			input_size := 2                                                  // Default number of input slots
 			matching_target := int(RandUint24() % uint32(num_input_clients)) // Target that is matched, has to be < num_input_clients
-			//matching_target := 1
-			//matching_target_2 := 3
-			//input_bitlength := 16                                            // Default length of each input in bit.
 
 			/*
-				TODO: update this comment
-				 * Creating encryption parameters from default settings:
-				 * logN = 14, logQP = 438, and plaintext modulus T = 65537.
-				 *
-				 * TODO: Optimize based on (num_input_clients, input_size)
-				 *
-				 * Assumptions:
-				 * - N is greater than input_size*num_input_clients.
-				 * - N is ideally divisible by input_size (i.e., |input_size| = 2^k, where logN >> k) -> N/k is the maximum for num_input_clients
-				 *   (If this condition is not met, another aggregate ciphertext will need to be allocated.)
-				 *
-				 * Consideration:
-				 * - logP must be large enough to accommodate the size of individual inputs. Otherwise we will have to adapt an additional CRT representation.
-			*/
+			 * Creating encryption parameters (For more details see https://homomorphicencryption.org/standard/)
+			 * logN = 13, logQP = 58, plaintext modulus T = 113246209 and a ternary distribution.
+			 *
+			 *
+			 * Requirements for parameter tuning:
+			 * - l*N must be greater than input_size*num_input_clients, i.e., number of overall slots, where l is the number of required ciphertexts, see the num_aggr_cts variable to fit all inputs.
+			 * - N must be divisible by input_size (i.e., |input_size| = 2^k, where logN >> k) -> N/k is the maximum for num_input_clients
+			 * - num_input_clients has to be exactly l*N/k. Otherwise this benchmark will not work correctly.
+			 * - PlaintextModulus must be large enough to accommodate the size of individual inputs. Otherwise you will have to adapt an additional CRT representation.
+			 */
 			params, err := bgv.NewParametersFromLiteral(bgv.ParametersLiteral{
-				LogN:             logN,
+				LogN:             13,
 				LogQ:             []int{58},
-				PlaintextModulus: 113246209, // max bitlength of a component is 26
-				//PlaintextModulus: 65537, // max bitlength of a component is 16
+				PlaintextModulus: 113246209, // 26 bits
+				//PlaintextModulus: 65537,   // 16 bits
 			})
 			if err != nil {
 				logger.Error(err.Error(), "Where?", "Parameter Init failed")
@@ -76,7 +64,7 @@ func main() {
 				panic("In general clients at the end of a ciphertext might have some slots in the next cipher requiring two ciphertexts, but we assume here for simplicity that this never happens. This never happens, if num_input_clients*input_size % N == 0")
 			}
 
-			nr_ciphers := int(math.Ceil(float64(input_size*num_input_clients) / float64(params.MaxSlots())))
+			num_aggr_cts := int(math.Ceil(float64(input_size*num_input_clients) / float64(params.MaxSlots())))
 
 			//-----------------	Init Decryptor -----------------//
 			kgen := rlwe.NewKeyGenerator(params)
@@ -90,10 +78,10 @@ func main() {
 			//-----------------	Init Input Clients -----------------//
 			ecd_input := bgv.NewEncoder(params)
 			enc_input := bgv.NewEncryptor(params, pk)
-			// In general clients at the end of a ciphertext might have some slots in the next cipher requiring two ciphertexts, but we assume here for simplicity that this never happens.
-			// This never happens, if num_input_clients*input_size % N == 0
+
 			inputs := make([][]uint64, num_input_clients)
 			matching_values := make([]uint64, input_size)
+			//---Fill Input Arrays ---//
 			for k := range num_input_clients {
 				inputs[k] = make([]uint64, params.MaxSlots())
 				for j := range params.MaxSlots() {
@@ -107,7 +95,7 @@ func main() {
 					}
 				}
 			}
-
+			//---Encrypt the Inputs---//
 			pt_inputs := make([]*rlwe.Plaintext, num_input_clients)
 			ct_inputs := make([]*rlwe.Ciphertext, num_input_clients)
 			for k := range num_input_clients {
@@ -122,25 +110,25 @@ func main() {
 					panic(err)
 				}
 			}
+
 			//-----------------	Init Initiating Party -----------------//
 			ecd_init := bgv.NewEncoder(params)
 			enc_init := bgv.NewEncryptor(params, pk)
 			inputs_init := make([]uint64, params.MaxSlots())
-			inputs_mask := make([]uint64, params.MaxSlots()*nr_ciphers)
+			inputs_mask := make([]uint64, params.MaxSlots()*num_aggr_cts)
 			/*
 			 * SIMD Encoding
 			 *
 			 * Initializer:
 			 * --> (x_init_1, ..., x_init_n, x_init_1, ..., x_init_n, ..., x_init_1, ..., x_init_n)
-			 * (The same set of n initial values is repeated m times across the plaintext slots.)
+			 * (The same set of n initial values is repeated m times across the plaintext slots of a single ciphertext)
 			 *
 			 * Input for Client i:
 			 * --> (0, ..., 0, x_client_i*n, ..., x_client_((i+1)*n-1), 0, ..., 0)
-			 * (The client's input is encoded into plaintext slots from index i*n to (i+1)*n-1, with zeros filling the rest.)
+			 * (The client's input is encoded into plaintext slots from index i*n to (i+1)*n-1, with 1s filling the rest)
 			 *
 			 * Where 'n' represents the size of the input, and 'm' represents the number of clients.
 			 */
-
 			for k := range num_input_clients {
 				for j := range input_size {
 					if k*input_size+j < params.MaxSlots() {
@@ -150,6 +138,7 @@ func main() {
 				}
 			}
 
+			//---Encrypt the Input---//
 			pt_init := bgv.NewPlaintext(params, params.MaxLevel())
 			if err = ecd_init.Encode(inputs_init, pt_init); err != nil {
 				logger.Error(err.Error(), "Where?", "Error during Initializer Input Encoding")
@@ -160,9 +149,10 @@ func main() {
 				logger.Error(err.Error(), "Where?", "Error during Initializer Input Encryption")
 				panic(err)
 			}
-			cts_mask := make([]*rlwe.Ciphertext, nr_ciphers)
 
-			for k := range nr_ciphers {
+			//---Encrypt the Mask---//
+			cts_mask := make([]*rlwe.Ciphertext, num_aggr_cts)
+			for k := range num_aggr_cts {
 				pt_mask := bgv.NewPlaintext(params, params.MaxLevel())
 				if err = ecd_init.Encode(inputs_mask[k*params.MaxSlots():(k+1)*params.MaxSlots()], pt_mask); err != nil {
 					logger.Error(err.Error(), "Where?", "Error during Initializer Mask Encoding")
@@ -177,41 +167,35 @@ func main() {
 			}
 			logger.Info("Initialization Finished")
 			//-------------------	Outsourcing Phase	-------------------
-			/*
-			*	The Simulation of Network Communcation is skipped in this benchmark
-			*
-			 */
-			// init ciphertexts
-			ct_aggr := make([]*rlwe.Ciphertext, nr_ciphers)
-			for k := range nr_ciphers {
+			start := time.Now()
+			//---Init the Aggregation Ciphertexts---//
+			ct_aggr := make([]*rlwe.Ciphertext, num_aggr_cts)
+			for k := range num_aggr_cts {
 				ct_aggr[k] = bgv.NewCiphertext(params, 1, params.MaxLevel())
 			}
-			start := time.Now()
 
-			// aggregate all clients
+			//---Aggregate the Ciphertexts---//
 			for k := range num_input_clients {
-				//Find out the ciphertext index of this client
-				ct_index := int(math.Ceil(float64((k * input_size) / params.MaxSlots())))
-				evaluator.Add(ct_aggr[ct_index], ct_inputs[k], ct_aggr[ct_index])
+				ct_index := int(math.Ceil(float64((k * input_size) / params.MaxSlots()))) //Find out the ciphertext index of this client
+				evaluator.Add(ct_aggr[ct_index], ct_inputs[k], ct_aggr[ct_index])         //Aggregate
 			}
 			runtime_aggregation := time.Since(start)
 
 			//-------------------	Calculation Phase	-------------------
-			for k := range nr_ciphers {
-				evaluator.Sub(ct_aggr[k], ct_init, ct_aggr[k])
+			for k := range num_aggr_cts {
+				evaluator.Sub(ct_aggr[k], ct_init, ct_aggr[k]) // Compute the Matching
 				ct_rnd := rlwe.NewCiphertextRandom(rand.Reader, params, 1, params.MaxLevel())
-				evaluator.Mul(ct_aggr[k], ct_rnd, ct_aggr[k])
-				evaluator.Add(ct_aggr[k], cts_mask[k], ct_aggr[k]) // Apply encrypted mask
+				evaluator.Mul(ct_aggr[k], ct_rnd, ct_aggr[k])      // Randomize the Matching
+				evaluator.Add(ct_aggr[k], cts_mask[k], ct_aggr[k]) // Mask the Matching
 			}
 			runtime_calculator := time.Since(start)
 
 			//-------------------	Decryption Phase	-------------------
 			start = time.Now()
-			// first dimension is the number of cipher, the second the plaintext values
-			res := make([][]uint64, nr_ciphers)
-			pt_dec := make([]*rlwe.Plaintext, nr_ciphers)
-			// decrypt all ciphers
-			for k := range nr_ciphers {
+			res := make([][]uint64, num_aggr_cts)
+			pt_dec := make([]*rlwe.Plaintext, num_aggr_cts)
+			//---Decrypt the Result---//
+			for k := range num_aggr_cts {
 				res[k] = make([]uint64, params.MaxSlots())
 				pt_dec[k] = bgv.NewPlaintext(params, params.MaxLevel())
 				dec.Decrypt(ct_aggr[k], pt_dec[k])
@@ -221,9 +205,8 @@ func main() {
 
 			//-------------------	Post-Processing Phase	-------------------
 			start = time.Now()
-			psi_results := make([][]int, nr_ciphers)
-			//matching_failed := false
-			for k := range nr_ciphers {
+			psi_results := make([][]int, num_aggr_cts)
+			for k := range num_aggr_cts {
 				res[k] = Unmask(res[k], inputs_mask[k*params.MaxSlots():(k+1)*params.MaxSlots()])
 				if params.MaxSlots()/input_size < num_input_clients {
 					psi_results[k] = ScanForValue(res[k], uint64(params.MaxSlots()/input_size)-1)
@@ -231,27 +214,21 @@ func main() {
 					psi_results[k] = ScanForValue(res[k], uint64(num_input_clients)-1)
 				}
 			}
-			/*
-				if matching_failed {
-					logger.Info("Sanity Check", "Matching failed with matching target", matching_target)
-					panic("Should have matched with at least one client!")
-				}
-			*/
+
 			runtime_postprocessing := time.Since(start)
 			logger.Info("Sanity Check", "Matching input client", matching_target)
 			logger.Info("The following Input Clients have matching inputs with Initializer", "Indices", psi_results)
 			//logger.Info("Benchmark Configuration", "Number of Clients", num_input_clients, "Input Size", input_size)
 			logger.Info("Benchmark Timings", "Runtime Calculator with Aggregation", runtime_calculator, "Runtime Calculator without Aggregation", runtime_calculator-runtime_aggregation, "Runtime Decryptor", runtime_decryptor, "Runtime Postprocessing", runtime_postprocessing)
-			// store timings
 
-			output_timings[i-10][0] += runtime_calculator
-			output_timings[i-10][1] += runtime_calculator - runtime_aggregation
-			output_timings[i-10][2] += runtime_decryptor
-			output_timings[i-10][3] += runtime_postprocessing
+			output_timings[i-16][0] += runtime_calculator
+			output_timings[i-16][1] += runtime_calculator - runtime_aggregation
+			output_timings[i-16][2] += runtime_decryptor
+			output_timings[i-16][3] += runtime_postprocessing
 		}
 		// calculate averages
-		for ind := range output_timings[i-10] {
-			output_timings[i-10][ind] = time.Duration(float64(output_timings[i-10][ind]) / float64(average_count))
+		for ind := range output_timings[i-16] {
+			output_timings[i-16][ind] = time.Duration(float64(output_timings[i-16][ind]) / float64(average_count))
 		}
 	}
 }
@@ -276,10 +253,6 @@ func ScanForValue(values []uint64, value uint64) (value_indices []int) {
 	return value_indices
 }
 
-/*
-* TODO: If RandUint16/64/BigInt() is used for purposes other than security (e.g., random data for testing or benchmarking),
-* consider switching to math/rand instead of crypto/rand for better performance.
- */
 func RandUint64() uint64 {
 	b := []byte{0, 0, 0, 0}
 	if _, err := rand.Read(b); err != nil {
