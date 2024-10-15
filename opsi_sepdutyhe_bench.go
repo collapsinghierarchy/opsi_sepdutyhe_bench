@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"os/signal"
 	"strconv"
 	"time"
 
@@ -27,6 +28,15 @@ func main() {
 
 	output_timings := make([][]time.Duration, loop_num_input_clients-17) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
 	defer store_Timing(output_timings, "numclients_"+strconv.Itoa(loop_num_input_clients)+"_inputsize_"+strconv.Itoa(2)+"_logN_"+strconv.Itoa(13)+"_avg_"+strconv.Itoa(average_count), logger)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		s := <-c
+		// signal caught, cleanup
+		logger.Info("Interrupt Signal caught. Saving Benchmark results", s)
+		store_Timing(output_timings, "numclients_"+strconv.Itoa(loop_num_input_clients)+"_inputsize_"+strconv.Itoa(2)+"_logN_"+strconv.Itoa(13)+"_avg_"+strconv.Itoa(average_count)+"_interrupted", logger)
+		os.Exit(1)
+	}()
 	//Loop over different number of input clients
 	for i := 17; i < loop_num_input_clients; i++ {
 		logger.Info("Starting loop "+strconv.FormatInt(int64(i+1), 10)+" / "+strconv.FormatInt(int64(loop_num_input_clients), 10), "Number of Clients", powInt(2, i))
