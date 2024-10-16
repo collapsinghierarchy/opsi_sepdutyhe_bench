@@ -19,7 +19,6 @@ import (
 
 // Name of the folder in which the files are created
 // /benchmarks/test_name
-
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	//----------------- Params for Benchmarking -----------------//
@@ -28,6 +27,7 @@ func main() {
 
 	output_timings := make([][]time.Duration, loop_num_input_clients-10) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
 	defer store_Timing(output_timings, "numclients_"+strconv.Itoa(loop_num_input_clients)+"_inputsize_"+strconv.Itoa(2)+"_logN_"+strconv.Itoa(13)+"_avg_"+strconv.Itoa(average_count), logger)
+	//Interrupt Handling in case one want to stop the benchmark and still keep the current results
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	go func() {
@@ -236,7 +236,7 @@ func main() {
 			output_timings[i-10][2] += runtime_decryptor
 			output_timings[i-10][3] += runtime_postprocessing
 		}
-		// calculate averages
+		// Calculate Averages
 		for ind := range output_timings[i-10] {
 			output_timings[i-10][ind] = time.Duration(float64(output_timings[i-10][ind]) / float64(average_count))
 		}
