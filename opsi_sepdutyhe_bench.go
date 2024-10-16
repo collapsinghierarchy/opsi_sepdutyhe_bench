@@ -23,7 +23,7 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	//----------------- Params for Benchmarking -----------------//
-	loop_num_input_clients := 20  // Number of Input Clients Loop (log2). For Laptops with <32GB RAM >15 will most likely not work.
+	loop_num_input_clients := 14  // Number of Input Clients Loop (log2). For Laptops with <32GB RAM >15 will most likely not work.
 	const average_count int = 100 // Number retries for averaging
 
 	output_timings := make([][]time.Duration, loop_num_input_clients-10) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
