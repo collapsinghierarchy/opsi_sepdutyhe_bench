@@ -23,10 +23,10 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	//----------------- Params for Benchmarking -----------------//
-	loop_num_input_clients := 20  // Number of Input Clients Loop (log2). Tested for X < 17
+	loop_num_input_clients := 20  // Number of Input Clients Loop (log2). For Laptops with <32GB RAM >15 will most likely not work.
 	const average_count int = 100 // Number retries for averaging
 
-	output_timings := make([][]time.Duration, loop_num_input_clients-17) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
+	output_timings := make([][]time.Duration, loop_num_input_clients-10) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
 	defer store_Timing(output_timings, "numclients_"+strconv.Itoa(loop_num_input_clients)+"_inputsize_"+strconv.Itoa(2)+"_logN_"+strconv.Itoa(13)+"_avg_"+strconv.Itoa(average_count), logger)
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -38,9 +38,9 @@ func main() {
 		os.Exit(1)
 	}()
 	//Loop over different number of input clients
-	for i := 17; i < loop_num_input_clients; i++ {
+	for i := 10; i < loop_num_input_clients; i++ {
 		logger.Info("Starting loop "+strconv.FormatInt(int64(i+1), 10)+" / "+strconv.FormatInt(int64(loop_num_input_clients), 10), "Number of Clients", powInt(2, i))
-		output_timings[i-17] = make([]time.Duration, 4) // init timings array
+		output_timings[i-10] = make([]time.Duration, 4) // init timings array
 		for avg_count := range average_count {
 			logger.Info("Start Initialization nr " + strconv.Itoa(avg_count))
 			//-----------------Configuration of the Individual Run -----------------//
@@ -231,14 +231,14 @@ func main() {
 			//logger.Info("Benchmark Configuration", "Number of Clients", num_input_clients, "Input Size", input_size)
 			logger.Info("Benchmark Timings", "Runtime Calculator with Aggregation", runtime_calculator, "Runtime Calculator without Aggregation", runtime_calculator-runtime_aggregation, "Runtime Decryptor", runtime_decryptor, "Runtime Postprocessing", runtime_postprocessing)
 
-			output_timings[i-17][0] += runtime_calculator
-			output_timings[i-17][1] += runtime_calculator - runtime_aggregation
-			output_timings[i-17][2] += runtime_decryptor
-			output_timings[i-17][3] += runtime_postprocessing
+			output_timings[i-10][0] += runtime_calculator
+			output_timings[i-10][1] += runtime_calculator - runtime_aggregation
+			output_timings[i-10][2] += runtime_decryptor
+			output_timings[i-10][3] += runtime_postprocessing
 		}
 		// calculate averages
-		for ind := range output_timings[i-17] {
-			output_timings[i-17][ind] = time.Duration(float64(output_timings[i-17][ind]) / float64(average_count))
+		for ind := range output_timings[i-10] {
+			output_timings[i-10][ind] = time.Duration(float64(output_timings[i-10][ind]) / float64(average_count))
 		}
 	}
 }
