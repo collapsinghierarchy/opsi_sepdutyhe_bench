@@ -60,7 +60,7 @@ func main() {
 			 * - PlaintextModulus must be large enough to accommodate the size of individual inputs. Otherwise you will have to adapt an additional CRT representation.
 			 */
 			params, err := bgv.NewParametersFromLiteral(bgv.ParametersLiteral{
-				LogN:             13,
+				LogN:             12,
 				LogQ:             []int{58},
 				PlaintextModulus: 113246209, // 26 bits
 				//PlaintextModulus: 65537,   // 16 bits
@@ -90,6 +90,7 @@ func main() {
 			enc_input := bgv.NewEncryptor(params, pk)
 
 			inputs := make([][]uint64, num_input_clients)
+
 			matching_values := make([]uint64, input_size)
 			//---Fill Input Arrays ---//
 			for k := range num_input_clients {
@@ -126,6 +127,7 @@ func main() {
 			enc_init := bgv.NewEncryptor(params, pk)
 			inputs_init := make([]uint64, params.MaxSlots())
 			inputs_mask := make([]uint64, params.MaxSlots()*num_aggr_cts)
+			intermedia_rnd := make([]uint64, params.MaxSlots()*num_aggr_cts)
 			/*
 			 * SIMD Encoding
 			 *
@@ -145,6 +147,7 @@ func main() {
 						inputs_init[k*input_size+j] = matching_values[j]
 					}
 					inputs_mask[k*input_size+j] = uint64(RandUint24())
+					intermedia_rnd[k*input_size+j] = uint64(RandUint24())
 				}
 			}
 
@@ -175,6 +178,7 @@ func main() {
 				}
 				cts_mask[k] = ct_mask
 			}
+
 			logger.Info("Initialization Finished")
 			//-------------------	Outsourcing Phase	-------------------
 			start := time.Now()
@@ -192,10 +196,25 @@ func main() {
 			runtime_aggregation := time.Since(start)
 
 			//-------------------	Calculation Phase	-------------------
+			//Prepare the randomness
+			cts_rnd := make([]*rlwe.Ciphertext, num_aggr_cts)
 			for k := range num_aggr_cts {
-				evaluator.Sub(ct_aggr[k], ct_init, ct_aggr[k]) // Compute the Matching
-				ct_rnd := rlwe.NewCiphertextRandom(rand.Reader, params, 1, params.MaxLevel())
-				evaluator.Mul(ct_aggr[k], ct_rnd, ct_aggr[k])      // Randomize the Matching
+				pt_rnd := bgv.NewPlaintext(params, params.MaxLevel())
+				if err = ecd_init.Encode(intermedia_rnd[k*params.MaxSlots():(k+1)*params.MaxSlots()], pt_rnd); err != nil {
+					logger.Error(err.Error(), "Where?", "Error during Initializer Mask Encoding")
+					panic(err)
+				}
+				ct_rnd := bgv.NewCiphertext(params, 1, params.MaxLevel())
+				if err = enc_init.Encrypt(pt_rnd, ct_rnd); err != nil {
+					logger.Error(err.Error(), "Where?", "Error during Initializer Mask Encryption")
+					panic(err)
+				}
+				cts_rnd[k] = ct_rnd
+			}
+
+			for k := range num_aggr_cts {
+				evaluator.Sub(ct_aggr[k], ct_init, ct_aggr[k])     // Compute the Matching
+				evaluator.Mul(ct_aggr[k], cts_rnd[k], ct_aggr[k])  // Randomize the Matching
 				evaluator.Add(ct_aggr[k], cts_mask[k], ct_aggr[k]) // Mask the Matching
 			}
 			runtime_calculator := time.Since(start)
