@@ -22,7 +22,7 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	//----------------- Params for Benchmarking -----------------//
-	loop_num_input_clients := 14  // Number of Input Clients Loop (log2). For Laptops with <32GB RAM >15 will most likely not work.
+	loop_num_input_clients := 15  // Number of Input Clients Loop (log2). For Laptops with <32GB RAM >15 will most likely not work.
 	const average_count int = 100 // Number retries for averaging
 
 	output_timings := make([][]time.Duration, loop_num_input_clients-10) // Stores the measured timings: Calculator (w/Aggr.), Calculator (w/oAggr.) a, Decryptor, postprocessing (Initator)
@@ -61,7 +61,7 @@ func main() {
 			 */
 			params, err := bgv.NewParametersFromLiteral(bgv.ParametersLiteral{
 				LogN:             12,
-				LogQ:             []int{58},
+				LogQ:             []int{58, 55},
 				PlaintextModulus: 113246209, // 26 bits
 				//PlaintextModulus: 65537,   // 16 bits
 			})
@@ -96,7 +96,7 @@ func main() {
 			for k := range num_input_clients {
 				inputs[k] = make([]uint64, params.MaxSlots())
 				for j := range params.MaxSlots() {
-					inputs[k][j] = 1
+					inputs[k][j] = 0
 				}
 				for j := range input_size {
 					ind := (k*input_size + j) % params.MaxSlots()
@@ -211,10 +211,9 @@ func main() {
 				}
 				cts_rnd[k] = ct_rnd
 			}
-
 			for k := range num_aggr_cts {
 				evaluator.Sub(ct_aggr[k], ct_init, ct_aggr[k])     // Compute the Matching
-				evaluator.Mul(ct_aggr[k], cts_rnd[k], ct_aggr[k])  // Randomize the Matching
+				evaluator.Mul(ct_aggr[k], cts_rnd[k], ct_aggr[k])  // Randomize the Differences
 				evaluator.Add(ct_aggr[k], cts_mask[k], ct_aggr[k]) // Mask the Matching
 			}
 			runtime_calculator := time.Since(start)
@@ -235,13 +234,15 @@ func main() {
 			//-------------------	Post-Processing Phase	-------------------
 			start = time.Now()
 			psi_results := make([][]int, num_aggr_cts)
+			inputs_to_scan := num_input_clients * input_size
 			for k := range num_aggr_cts {
 				res[k] = Unmask(res[k], inputs_mask[k*params.MaxSlots():(k+1)*params.MaxSlots()])
-				if params.MaxSlots()/input_size < num_input_clients {
-					psi_results[k] = ScanForValue(res[k], uint64(params.MaxSlots()/input_size)-1)
+				if params.MaxSlots() > inputs_to_scan {
+					psi_results[k] = ScanForValue(res[k][0:inputs_to_scan], 0)
 				} else {
-					psi_results[k] = ScanForValue(res[k], uint64(num_input_clients)-1)
+					psi_results[k] = ScanForValue(res[k], 0)
 				}
+				inputs_to_scan = inputs_to_scan - params.MaxSlots()/input_size
 			}
 
 			runtime_postprocessing := time.Since(start)
