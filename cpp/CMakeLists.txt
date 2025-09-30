@@ -30,3 +30,22 @@ target_link_libraries(main
         OPENFHEpke           # imported from OpenFHE’s config
         OpenMP::OpenMP_CXX     # enables -fopenmp and links libgomp / libomp
 )
+
+
+# Equality indicator benchmark (BGV): frobenius vs fermat
+add_executable(eq_indicator_bench eq_indicator_bench.cpp)
+
+target_include_directories(eq_indicator_bench
+    PRIVATE
+        /usr/local/include
+        /usr/local/include/openfhe/core
+        /usr/local/include/openfhe/cereal
+        /usr/local/include/openfhe/pke
+        /usr/local/include/openfhe/binfhe
+)
+
+target_link_libraries(eq_indicator_bench
+    PRIVATE
+        OPENFHEpke
+        OpenMP::OpenMP_CXX
+)

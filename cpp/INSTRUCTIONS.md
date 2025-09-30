@@ -48,3 +48,41 @@ docker run --rm \
   -v "$(pwd)/passengers.csv":/data/passengers.csv:ro \
   he-bench /data/passengers.csv
 ```
+# The protocol
+## Encrypted SQL `COUNT(*)` Benchmark – Pseudocode
+
+### Symbols
+
+| Symbol | Meaning |
+|--------|---------|
+| `m` | number of **rows** (senders) in the CSV |
+| `c` | number of **columns** (`columnsPerSender`) |
+| `N` | BGV ring dimension (`ringDim`) |
+| `p` | plaintext modulus (fixed 65 537) |
+| `Agg = ceil(m·c / N)` | number of ciphertext slices (“aggregates”) |
+
+---
+
+### Phase 0 · Pre-processing
+
+```text
+rows   ←  CSV(path)                      // vector<vector<string>>
+hash16 ←  fast 16-bit hash function
+rows16 ←  map each cell of rows through hash16      // uint16_t
+
+query  ←  { colIdx : {allowedString₁,…,allowedString_k} }  // OR-sets
+ref16  ←  wildcard vector of size c  (0xFFFF)
+for each (col, values) in query:
+        ref16[col] ←  hash16(values[1])   // singletons → degree-1 poly
+        // if |values|>1 we need polynomial method (omitted here)
+
+padding: while (rows16.size · c) % N ≠ 0
+             append random dummy row to rows16
+m ← rows16.size
+```
+### Phase 1 · Crypto context and keys
+```text
+cc  ←  GenCryptoContext( p = 65 537, N, depth = 2, 128-bit security )
+(pk, sk) ←  KeyGen(cc)
+EvalMultKeyGen(sk)
+```
