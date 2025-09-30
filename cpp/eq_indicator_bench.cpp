@@ -25,7 +25,6 @@ using ms    = std::chrono::duration<double, std::milli>;
 
 // Simple arg parsing
 struct Args {
-    std::string mode = "frobenius"; // or "fermat"
     std::size_t slots = 4096;       // number of SIMD slots to fill with the same test value
     std::size_t trials = 10;        // number of repeated evaluations to average
     bool verbose = false;
@@ -35,12 +34,11 @@ Args parseArgs(int argc, char** argv) {
     Args a;
     for (int i = 1; i < argc; ++i) {
         std::string s(argv[i]);
-        if (s == "--mode" && i+1 < argc) a.mode = argv[++i];
-        else if (s == "--slots" && i+1 < argc) a.slots = std::stoul(argv[++i]);
+        if (s == "--slots" && i+1 < argc) a.slots = std::stoul(argv[++i]);
         else if (s == "--trials" && i+1 < argc) a.trials = std::stoul(argv[++i]);
         else if (s == "--verbose") a.verbose = true;
         else if (s == "-h" || s == "--help") {
-            std::cout << "Usage: eq_indicator_bench [--mode frobenius|fermat] [--slots N] [--trials T] [--verbose]\n";
+            std::cout << "Usage: eq_indicator_bench [--slots N] [--trials T] [--verbose]\n";
             std::exit(0);
         }
     }
@@ -124,57 +122,9 @@ Ciphertext<DCRTPoly> equalityFermat(const CryptoContext<DCRTPoly>& cc,
     return evalOneMinus(cc, pk, pow, slots);
 }
 
-// Equality via "depth-free Frobenius":
-//   q = p^d, compute Norm = ∏_{i=0..d-1} Δ^{p^i} using automorphisms (depth-free).
-//   Then Eq = 1 - Norm^(p-1).
-Ciphertext<DCRTPoly> equalityFrobenius(const CryptoContext<DCRTPoly>& cc,
-                                       const PublicKey<DCRTPoly>& pk,
-                                       const PrivateKey<DCRTPoly>& sk,
-                                       Ciphertext<DCRTPoly> delta,
-                                       uint32_t p,
-                                       uint32_t d,
-                                       std::size_t slots) {
-    // Cyclotomic order m = 2*N (power-of-two cyclotomic). Frobenius a->a^p corresponds
-    // to automorphism index a = p mod m on BFV/BGV plaintext packing (empirically used).
-    // We'll generate indices for p^i mod m and apply EvalAutomorphism.
-    const uint32_t m = cc->GetCyclotomicOrder();
-    std::vector<uint32_t> idx; idx.reserve(d-1);
-    for (uint32_t i = 1; i < d; ++i) {
-        uint32_t a = modexp_u32(p, i, m);
-        if ((a & 1u) == 0u) {
-            // ensure odd (required for automorphism in 2-power cyclotomic); adjust by +m/2 if needed
-            a = (a + m/2u) % m;
-            if ((a & 1u) == 0u) throw std::runtime_error("Computed automorphism index is not odd; check parameters.");
-        }
-        idx.push_back(a);
-    }
-    // Generate the required automorphism keys
-    cc->EvalAutomorphismKeyGen(sk, idx);
-
-    // Apply Frobenius powers depth-free
-    std::vector<Ciphertext<DCRTPoly>> deltas;
-    deltas.reserve(d);
-    deltas.push_back(delta); // p^0
-    for (uint32_t i = 1; i < d; ++i) {
-        deltas.push_back(cc->EvalAutomorphism(delta, idx[i-1], cc->GetEvalAutomorphismKeyMap(sk->GetKeyTag())));
-    }
-
-    // Multiply in a binary tree: product of d terms
-    auto prod = deltas[0];
-    for (uint32_t i = 1; i < d; ++i) {
-        prod = cc->EvalMult(prod, deltas[i]);
-        cc->RelinearizeInPlace(prod);
-    }
-    // Raise to (p-1). For p=17 -> 4 squarings.
-    unsigned k = 0; uint32_t t = p - 1; while ((t & 1u) == 0u) { ++k; t >>= 1u; }
-    auto pow = evalPow2k(cc, prod, k);
-    return evalOneMinus(cc, pk, pow, slots);
-}
-
 
 int main(int argc, char** argv) {
     auto args = parseArgs(argc, argv);
-    const bool useFrobenius = (args.mode == "frobenius");
 
     // ---------------- Params ----------------
     CCParams<CryptoContextBGVRNS> params;
@@ -184,29 +134,17 @@ int main(int argc, char** argv) {
     uint32_t p = 17;
     uint32_t d = 1;
 
-    if (useFrobenius) {
-        // Depth: ~6 -> use 7
-        params.SetMultiplicativeDepth(7);
-        params.SetPlaintextModulus(17);
+    // 16 squarings -> depth ~16, give cushion
+    params.SetMultiplicativeDepth(18);
+    params.SetPlaintextModulus(65537);
 
-        // Use HYBRID KS and set mod sizes (avoid digitSize=0 issue)
-        params.SetKeySwitchTechnique(HYBRID);
+    // Use HYBRID KS and set mod sizes
+    params.SetKeySwitchTechnique(HYBRID);
 
-        // Slots hint
-        if (args.slots > 4096) params.SetRingDim(16384);
-        else params.SetRingDim(8192);
-    } else {
-        // 16 squarings -> depth ~16, give cushion
-        params.SetMultiplicativeDepth(18);
-        params.SetPlaintextModulus(65537);
-
-        // Use HYBRID KS and set mod sizes
-        params.SetKeySwitchTechnique(HYBRID);
-
-        // Larger ring helps with this depth/plaintext
-        if (args.slots > 2048) params.SetRingDim(16384);
-        else params.SetRingDim(8192);
-    }
+    // Larger ring helps with this depth/plaintext
+    if (args.slots > 2048) params.SetRingDim(16384);
+    else params.SetRingDim(8192);
+    
 
     auto cc = GenCryptoContext(params);
     cc->Enable(PKE);
@@ -238,9 +176,6 @@ int main(int argc, char** argv) {
     auto ctDeltaNeq = cc->EvalSub(ctA, ctBneq);
 
     auto run_once = [&](const Ciphertext<DCRTPoly>& delta)->Ciphertext<DCRTPoly> {
-        if (useFrobenius)
-            return equalityFrobenius(cc, kp.publicKey, kp.secretKey, delta, p, d, slots);
-        else
             return equalityFermat(cc, kp.publicKey, delta, p, slots);
     };
 
